@@ -1,8 +1,8 @@
-import requests
-import logging
-import requests
 import os
 import sys
+import time
+import requests
+import logging
 
 from dotenv import load_dotenv
 from exceptions import APIError
@@ -30,26 +30,34 @@ HEADERS = {'X-CoinAPI-Key': API_TOKEN}
 
 
 def start(update, _):
-    """Приветственная комманда"""
+    """Greeting command /start"""
     update.message.reply_text('Привет! Я криптобот и я могу поделиться с тобой'
                               ' некоторой информацией о криптовалютах: '
                               '`/help`- информация о доступных функциях')
 
 
 def help_command(update, _):
-    """Комманда /help"""
+    """Command /help"""
     update.message.reply_text('Используйте `/popular`, '
                               'что бы узнать цену одной из популярных валют.'
+                              )
+    update.message.reply_text('Используйте `/exchanges`, '
+                              'что бы узнать информацию о топ-6 биржах'
                               )
     update.message.reply_text('Если необходимой валюты нету в списке '
                               'напишите коды валют, '
                               'информация о которых вам необходима. '
-                              'Например "BTC/USD", "ETH/BTC"'
+                              'Например "BTC-USD", "ETH-BTC"'
+                              )
+    update.message.reply_text('Вы можете настроить предупреждение '
+                              'о достижении монетой определенного уровня цены,'
+                              ' для этого напишити команду в формате: '
+                              '"BTC-USD-необходимая цена-warn""'
                               )
 
 
 def popular(update, _):
-    """Комманда /popular"""
+    """Command /popular"""
     keyboard = [
         [InlineKeyboardButton("BTC", callback_data='BTC')],
         [InlineKeyboardButton("ETH", callback_data='ETH')],
@@ -68,15 +76,75 @@ def popular(update, _):
     )
 
 
+def exchanges(update, _):
+    """Command top exchanges /exchanges"""
+    keyboard = [
+        [InlineKeyboardButton("BINANCE", callback_data='exch_1')],
+        [InlineKeyboardButton("COINBASE", callback_data='exch_2')],
+        [InlineKeyboardButton("KRAKEN", callback_data='exch_3')],
+        [InlineKeyboardButton("KUCOIN", callback_data='exch_4')],
+        [InlineKeyboardButton("GEMINI", callback_data='exch_5')],
+        [InlineKeyboardButton("BITFINEX", callback_data='exch_6')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    update.message.reply_text(
+        'Пожалуйста, выберите:',
+        reply_markup=reply_markup
+    )
+
+
+def get_exchange(update, _):
+    """
+    - Находим в списке сallback_data, сравниваем с выбором пользователя,
+      если одинаково достаем название биржи
+    - присваиваем название биржи переменной exc,
+    - делаем запрос к API и достаем нужную информацию.
+    """
+    query = update.callback_query
+    callback_data = query.data
+    user_answer_data = query['message']['reply_markup']['inline_keyboard']
+
+    for elem in user_answer_data:
+        if elem[0]['callback_data'] == callback_data:
+            exc = elem[0]['text']
+            break
+
+    endpoint = f'https://rest.coinapi.io/v1/exchanges?filter_exchange_id={exc}'
+
+    try:
+        response = requests.get(endpoint, headers=HEADERS).json()[0]
+
+        exchange = response.get('exchange_id')
+        opened = response.get('data_start')
+        volume_mth = response.get('volume_1mth_usd')
+        site = response.get('website')
+
+    except Exception as error:
+        raise APIError(
+            f'Не получилось запросить информацию от API {error}')
+
+    query.answer()
+
+    query.edit_message_text(
+        text=f'Биржа - {exchange}\nОткрыта - {opened}\n'
+             f'Объем торгов за месяц составляет: {volume_mth:_} - USD\n'
+             f'Website - {site}'
+    )
+
+
 def get_price_of_populars(update, _) -> str:
     """Узнать цену одной из популярных валют."""
     query = update.callback_query
     code_of_currency = query.data
-
     endpoint = f'https://rest.coinapi.io/v1/exchangerate/{code_of_currency}/USD'
-    response = requests.get(endpoint, headers=HEADERS).json()
 
-    price = response.get('rate')
+    try:
+        response = requests.get(endpoint, headers=HEADERS).json()
+        price = response.get('rate')
+    except Exception as error:
+        raise APIError(
+            f'Не получилось запросить информацию от API {error}')
 
     query.answer()
 
@@ -86,18 +154,15 @@ def get_price_of_populars(update, _) -> str:
     )
 
 
-def get_price_with_message(update, context) -> str:
-    """Извлекаем коды валют из сообщения и передаем их в ENDPOINT,
-    если сообщение не валидно, предупреждаем пользователя об этом.
+def get_price_with_message(context, codes: list) -> str:
     """
-    chat = update.message
-    mesg_of_user = chat['text'].split('/')
-    codes = [i for i in mesg_of_user if i in valid_codes]
-
-    if len(mesg_of_user) != 2:
+    Передаем коды из сообщения в ENDPOINT, 
+    если сообщение не валидно предупреждаем пользователя об этом.
+    """
+    if len(codes) != 2:
         context.bot.send_message(chat_id=CHAT_ID,
                                  text='Данные введены не правильно '
-                                      '"попробуйте формат BTC/USD, '
+                                      '"попробуйте формат BTC-USD, '
                                       'коды должны быть заглавными символами'
                                       'и в верном формате"',
                                  )
@@ -120,7 +185,55 @@ def get_price_with_message(update, context) -> str:
             )
             raise APIError(
                 f'Не получилось запросить информацию от API {error}')
-        
+
+
+def get_alarm(context, message):
+    """Текстовая команда для установки будильника на уровень цены"""
+    # обработать данные
+    fir_code = message[0]
+    sec_code = message[1]
+    user_price_level = message[3]
+    time_to_request = 20
+    print(message)
+    endpoint = f'https://rest.coinapi.io/v1/exchangerate/{fir_code}/{sec_code}'
+
+    while True:
+        try:
+            response = requests.get(endpoint, headers=HEADERS).json()
+
+            current_price = int(response.get('rate'))
+
+            if current_price <= user_price_level:
+                context.bot.send_message(
+                chat_id=CHAT_ID,
+                text=f'Цена {fir_code} опустилась до уровня\n'
+                      f'{current_price} - {sec_code}'
+                )
+
+            if current_price >= user_price_level:
+                context.bot.send_message(
+                chat_id=CHAT_ID,
+                text=f'Цена {fir_code} поднялась до уровня\n'
+                      f'{current_price} - {sec_code}'
+                )
+
+            time.sleep(time_to_request)
+
+        except Exception as error:
+            ...
+
+
+def messages(update, context):
+    """Обработчик сообщений."""
+    chat = update.message
+    mesg_of_user = chat['text'].split('-')
+    codes = [i for i in mesg_of_user if i in valid_codes]
+
+    if 'warn' in mesg_of_user:
+        get_alarm(context, mesg_of_user)
+    else:
+        get_price_with_message(context, codes)
+
 
 def check_tokens() -> bool:
     """Проверка доступности переменных окружения."""
@@ -136,11 +249,16 @@ def main():
     updater = Updater(token=TELEGRAM_TOKEN)
     app = updater.dispatcher
 
-    app.add_handler(CommandHandler('start', start))
-    app.add_handler(CommandHandler('help', help_command))
-    app.add_handler(CommandHandler('popular', popular))
-    app.add_handler(CallbackQueryHandler(get_price_of_populars))
-    app.add_handler(MessageHandler(Filters.text, get_price_with_message))
+    try:
+        app.add_handler(CommandHandler('start', start))
+        app.add_handler(CommandHandler('help', help_command))
+        app.add_handler(CommandHandler('popular', popular))
+        app.add_handler(CommandHandler('exchanges', exchanges))
+        app.add_handler(CallbackQueryHandler(get_exchange, pattern=r'exch_\d'))
+        app.add_handler(CallbackQueryHandler(get_price_of_populars))
+        app.add_handler(MessageHandler(Filters.text, messages))
+    except Exception as error:
+        logging.error(f'Возникла ошибка в работе программы {error}')
 
     updater.start_polling()
     updater.idle()

@@ -1,30 +1,22 @@
+import logging
 import os
 import sys
 import time
 import requests
-import logging
 
 from dotenv import load_dotenv
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (CallbackQueryHandler, CommandHandler, Filters,
+                          MessageHandler, Updater)
 from exceptions import APIError
-from valid_codes import valid_codes
-from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from telegram.ext import (
-    CommandHandler,
-    CallbackQueryHandler,
-    Filters,
-    MessageHandler,
-    Updater,
-)
 from logger import logs
+from valid_codes import valid_codes
 
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 API_TOKEN = os.getenv('API_TOKEN')
-CHAT_ID = os.getenv('CHAT_ID')
+PORT = int(os.environ.get('PORT', '88'))
 
 HEADERS = {'X-CoinAPI-Key': API_TOKEN}
 
@@ -46,13 +38,15 @@ def help_command(update, _):
                               )
     update.message.reply_text('Если необходимой валюты нету в списке '
                               'напишите коды валют, '
-                              'информация о которых вам необходима. '
+                              'информация о которых вам необходима.\n'
                               'Например "BTC-USD", "ETH-BTC"'
                               )
-    update.message.reply_text('Вы можете настроить предупреждение '
-                              'о достижении монетой определенного уровня цены,'
-                              ' для этого напишити команду в формате: '
-                              '"BTC-USD-необходимая цена-warn""'
+    update.message.reply_text('Вы можете настроить предупреждение о '
+                              'достижении монетой определенного уровня цены,\n'
+                              'Для начала проверьте цену текстовой командой:\n'
+                              'например BTC-USD, ETH-BTC, LTC-USD, а затем '
+                              'напишите команду в формате:\n'
+                              '"BTC-USD-необходимая цена-warn"'
                               )
 
 
@@ -154,17 +148,19 @@ def get_price_of_populars(update, _) -> str:
     )
 
 
-def get_price_with_message(context, codes: list) -> str:
+def get_price_with_message(context, message: list, chat_id: int) -> str:
     """
     Передаем коды из сообщения в ENDPOINT, 
     если сообщение не валидно предупреждаем пользователя об этом.
     """
+    codes = [i for i in message if i in valid_codes]
+
     if len(codes) != 2:
-        context.bot.send_message(chat_id=CHAT_ID,
+        context.bot.send_message(chat_id=chat_id,
                                  text='Данные введены не правильно '
                                       '"попробуйте формат BTC-USD, '
                                       'коды должны быть заглавными символами'
-                                      'и в верном формате"',
+                                      ' и в верном формате"',
                                  )
     else:
         try:
@@ -172,14 +168,14 @@ def get_price_with_message(context, codes: list) -> str:
             response = requests.get(endpoint, headers=HEADERS).json()
             price = response.get('rate')
             context.bot.send_message(
-                chat_id=CHAT_ID,
+                chat_id=chat_id,
                 text=f'На данный момент цена {codes[0]} '
                      f'составляет: {price} - {codes[1]}',
             )
 
         except Exception as error:
             context.bot.send_message(
-                chat_id=CHAT_ID,
+                chat_id=chat_id,
                 text='Возможно я еще, необладаю инфомацией о данной валюте, '
                      'но обещаю я скоро ее найду =)',
             )
@@ -187,15 +183,20 @@ def get_price_with_message(context, codes: list) -> str:
                 f'Не получилось запросить информацию от API {error}')
 
 
-def get_alarm(context, message):
+def get_alarm(context, message:list , chat_id: int):
     """Текстовая команда для установки будильника на уровень цены"""
-    # обработать данные
     fir_code = message[0]
     sec_code = message[1]
     user_price_level = message[3]
-    time_to_request = 20
-    print(message)
+    time_to_request = 900
+
     endpoint = f'https://rest.coinapi.io/v1/exchangerate/{fir_code}/{sec_code}'
+
+    context.bot.send_message(
+        chat_id=chat_id,
+        text='Когда цена достигнет необходимого уровня, '
+             'вам прийдет оповещение'
+        )
 
     while True:
         try:
@@ -205,17 +206,19 @@ def get_alarm(context, message):
 
             if current_price <= user_price_level:
                 context.bot.send_message(
-                chat_id=CHAT_ID,
+                chat_id=chat_id,
                 text=f'Цена {fir_code} опустилась до уровня\n'
                       f'{current_price} - {sec_code}'
                 )
+                break
 
             if current_price >= user_price_level:
                 context.bot.send_message(
-                chat_id=CHAT_ID,
+                chat_id=chat_id,
                 text=f'Цена {fir_code} поднялась до уровня\n'
                       f'{current_price} - {sec_code}'
                 )
+                break
 
             time.sleep(time_to_request)
 
@@ -226,18 +229,20 @@ def get_alarm(context, message):
 def messages(update, context):
     """Обработчик сообщений."""
     chat = update.message
+    chat_id = chat['chat']['id']
+
     mesg_of_user = chat['text'].split('-')
-    codes = [i for i in mesg_of_user if i in valid_codes]
 
     if 'warn' in mesg_of_user:
-        get_alarm(context, mesg_of_user)
+        get_alarm(context, mesg_of_user, chat_id)
+
     else:
-        get_price_with_message(context, codes)
+        get_price_with_message(context, mesg_of_user, chat_id)
 
 
 def check_tokens() -> bool:
     """Проверка доступности переменных окружения."""
-    return all((API_TOKEN, CHAT_ID, TELEGRAM_TOKEN))
+    return all((API_TOKEN, TELEGRAM_TOKEN, PORT))
 
 
 def main():
@@ -260,7 +265,12 @@ def main():
     except Exception as error:
         logging.error(f'Возникла ошибка в работе программы {error}')
 
-    updater.start_polling()
+
+    updater.start_webhook(
+        listen='0.0.0.0',
+        port=PORT,
+        url_path=TELEGRAM_TOKEN,
+        webhook_url=f'https://crynfo.onrender.com/{TELEGRAM_TOKEN}')
     updater.idle()
 
 

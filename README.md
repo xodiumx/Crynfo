@@ -8,7 +8,7 @@
 - Возможность выставить предупреждение о достижении монетой определенного уровеня цены
 
 
-## Try it - [crynfo](https://t.me/CrynfoBot).
+## Try it - [crynfo](https://t.me/CrynfoBot)
 
 ## Author - Alekseev Maksim
-- telegram - t.me/maxalxeev
+- telegram - [tm](https://t.me/maxalxeev)

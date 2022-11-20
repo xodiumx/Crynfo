@@ -23,9 +23,11 @@ HEADERS = {'X-CoinAPI-Key': API_TOKEN}
 
 def start(update, _):
     """Greeting command /start"""
-    update.message.reply_text('Привет! Я криптобот и я могу поделиться с тобой'
-                              ' некоторой информацией о криптовалютах: '
-                              '`/help`- информация о доступных функциях')
+    name = update.message.chat.first_name
+    update.message.reply_text(
+        f'Привет {name}! Я криптобот и я могу поделиться'
+        f' с тобой некоторой информацией о криптовалютах:\n'
+        f' `/help`- информация о доступных функциях')
 
 
 def help_command(update, _):
@@ -42,9 +44,9 @@ def help_command(update, _):
                               'Например "BTC-USD", "ETH-BTC"'
                               )
     update.message.reply_text('Вы можете настроить предупреждение о '
-                              'достижении монетой определенного уровня цены,\n'
+                              'достижении монетой определенного уровня цены.\n'
                               'Для начала проверьте цену текстовой командой:\n'
-                              'например BTC-USD, ETH-BTC, LTC-USD, а затем '
+                              'например BTC-USD, ETH-BTC, LTC-USD\nа затем '
                               'напишите команду в формате:\n'
                               '"BTC-USD-необходимая цена-warn"'
                               )
@@ -136,6 +138,8 @@ def get_price_of_populars(update, _) -> str:
     try:
         response = requests.get(endpoint, headers=HEADERS).json()
         price = response.get('rate')
+        if price is not None:
+            price = round(price, 3)
     except Exception as error:
         raise APIError(
             f'Не получилось запросить информацию от API {error}')
@@ -166,7 +170,13 @@ def get_price_with_message(context, message: list, chat_id: int) -> str:
         try:
             endpoint = f'https://rest.coinapi.io/v1/exchangerate/{codes[0]}/{codes[1]}'
             response = requests.get(endpoint, headers=HEADERS).json()
-            price = response.get('rate')
+            if codes[1] in ('USD', 'USDT', 'USDC'):
+                price = response.get('rate')
+                if price is not None:
+                    price = round(price, 3)
+            else:
+                price = response.get('rate')
+
             context.bot.send_message(
                 chat_id=chat_id,
                 text=f'На данный момент цена {codes[0]} '

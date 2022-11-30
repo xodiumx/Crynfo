@@ -8,9 +8,10 @@ from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (CallbackQueryHandler, CommandHandler, Filters,
                           MessageHandler, Updater)
-from exceptions import APIError
+from exceptions import APIError, GetPriceError, NotValidCurrencyError
 from logger import logs
 from valid_codes import valid_codes
+from utills import _get_exception_error
 
 load_dotenv()
 
@@ -48,7 +49,8 @@ def help_command(update, _):
                               'Для начала проверьте цену текстовой командой:\n'
                               'например BTC-USD, ETH-BTC, LTC-USD\nа затем '
                               'напишите команду в формате:\n'
-                              '"BTC-USD-необходимая цена-warn"'
+                              '"BTC-USD-необходимая цена-warn"\n'
+                              'запрос цены производится каждые 15 минут.'
                               )
 
 
@@ -90,7 +92,7 @@ def exchanges(update, _):
     )
 
 
-def get_exchange(update, _):
+def get_exchange(update, context):
     """
     - Находим в списке сallback_data, сравниваем с выбором пользователя,
       если одинаково достаем название биржи
@@ -99,15 +101,16 @@ def get_exchange(update, _):
     """
     query = update.callback_query
     callback_data = query.data
+    chat_id = query['message']['chat']['id']
     user_answer_data = query['message']['reply_markup']['inline_keyboard']
 
     for elem in user_answer_data:
         if elem[0]['callback_data'] == callback_data:
             exc = elem[0]['text']
             break
-
+    
     endpoint = f'https://rest.coinapi.io/v1/exchanges?filter_exchange_id={exc}'
-
+    
     try:
         response = requests.get(endpoint, headers=HEADERS).json()[0]
 
@@ -117,6 +120,7 @@ def get_exchange(update, _):
         site = response.get('website')
 
     except Exception as error:
+        _get_exception_error(context, chat_id)
         raise APIError(
             f'Не получилось запросить информацию от API {error}')
 
@@ -129,18 +133,24 @@ def get_exchange(update, _):
     )
 
 
-def get_price_of_populars(update, _) -> str:
+def get_price_of_populars(update, context) -> str:
     """Узнать цену одной из популярных валют."""
     query = update.callback_query
+    chat_id = query['message']['chat']['id']
     code_of_currency = query.data
+    
     endpoint = f'https://rest.coinapi.io/v1/exchangerate/{code_of_currency}/USD'
-
+    
     try:
         response = requests.get(endpoint, headers=HEADERS).json()
         price = response.get('rate')
         if price is not None:
             price = round(price, 3)
+        else:
+            _get_exception_error(context, chat_id)
+
     except Exception as error:
+        _get_exception_error(context, chat_id)
         raise APIError(
             f'Не получилось запросить информацию от API {error}')
 
@@ -160,12 +170,13 @@ def get_price_with_message(context, message: list, chat_id: int) -> str:
     codes = [i for i in message if i in valid_codes]
 
     if len(codes) != 2:
-        context.bot.send_message(chat_id=chat_id,
-                                 text='Данные введены не правильно '
-                                      '"попробуйте формат BTC-USD, '
-                                      'коды должны быть заглавными символами'
-                                      ' и в верном формате"',
-                                 )
+        context.bot.send_message(
+            chat_id=chat_id,
+            text='Данные введены не правильно '
+                '"попробуйте BTC-USD, '
+                'коды должны быть заглавными символами'
+                ' и в верном формате"',
+            )
     else:
         try:
             endpoint = f'https://rest.coinapi.io/v1/exchangerate/{codes[0]}/{codes[1]}'
@@ -174,6 +185,8 @@ def get_price_with_message(context, message: list, chat_id: int) -> str:
                 price = response.get('rate')
                 if price is not None:
                     price = round(price, 3)
+                else:
+                    _get_exception_error(context, chat_id)
             else:
                 price = response.get('rate')
 
@@ -182,70 +195,101 @@ def get_price_with_message(context, message: list, chat_id: int) -> str:
                 text=f'На данный момент цена {codes[0]} '
                      f'составляет: {price} - {codes[1]}',
             )
-
         except Exception as error:
-            context.bot.send_message(
-                chat_id=chat_id,
-                text='Возможно я еще, необладаю инфомацией о данной валюте, '
-                     'но обещаю я скоро ее найду =)',
-            )
+            _get_exception_error(context, chat_id)
             raise APIError(
                 f'Не получилось запросить информацию от API {error}')
 
 
 def get_alarm(context, message:list , chat_id: int):
-    """Текстовая команда для установки будильника на уровень цены"""
+    """
+    Текстовая команда для установки оповещения на определенный уровень цены
+    - Запрос к endpoint-у происходит каждые 15 минут
+    - Если команда введена не верно происходит оповещение пользователя
+    - Перед входом в цикл происходит проверка текущего уровня цены и ожидаемого
+      если пользователь ожидает повышение цены, будет производиться проверка
+      до момента, когда цена поднимется на ожидаемый уровень и наоборот.
+    """
     fir_code = message[0]
     sec_code = message[1]
-    user_price_level = message[3]
+    user_price_level = int(message[2])
     time_to_request = 900
+
+    try:
+        if not isinstance(user_price_level, int):
+            ...
+    except Exception:
+        context.bot.send_message(
+            chat_id=chat_id,
+            text='Введено не правильное числовое значение '
+                'повторите попытку.'
+            )
+        raise ValueError('Введено не числовое значение')
+
+    if fir_code and sec_code not in valid_codes:
+        context.bot.send_message(
+            chat_id=chat_id,
+            text='Возможно данные валюты не поддерживаются '
+                'или команда была записана не верно '
+                'воспользуйтесь командой `/help` и повторите попытку'
+            )
+        raise NotValidCurrencyError('Не валидные валюты')
 
     endpoint = f'https://rest.coinapi.io/v1/exchangerate/{fir_code}/{sec_code}'
 
     context.bot.send_message(
         chat_id=chat_id,
         text='Когда цена достигнет необходимого уровня, '
-             'вам прийдет оповещение'
+             'вам прийдет оповещение.'
         )
 
-    while True:
+    response = requests.get(endpoint, headers=HEADERS).json()
+    current_price = int(response.get('rate'))
+
+    if current_price < user_price_level:
         try:
-            response = requests.get(endpoint, headers=HEADERS).json()
+            while True:
+                response = requests.get(endpoint, headers=HEADERS).json()
+                current_price = int(response.get('rate'))
 
-            current_price = int(response.get('rate'))
+                if current_price >= user_price_level:
+                    context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f'Цена {fir_code} поднялась до уровня\n'
+                            f'{current_price} - {sec_code}'
+                        )
+                    break
+                time.sleep(time_to_request)
+        except Exception:
+            _get_exception_error(context, chat_id)
+            raise GetPriceError('Не получилось запросить информацию о цене.')
+    else:
+        try:
+            while True:
+                response = requests.get(endpoint, headers=HEADERS).json()
+                current_price = int(response.get('rate'))
 
-            if current_price <= user_price_level:
-                context.bot.send_message(
-                chat_id=chat_id,
-                text=f'Цена {fir_code} опустилась до уровня\n'
-                      f'{current_price} - {sec_code}'
-                )
-                break
-
-            if current_price >= user_price_level:
-                context.bot.send_message(
-                chat_id=chat_id,
-                text=f'Цена {fir_code} поднялась до уровня\n'
-                      f'{current_price} - {sec_code}'
-                )
-                break
-
-            time.sleep(time_to_request)
-
-        except Exception as error:
-            ...
+                if current_price <= user_price_level:
+                    context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f'Цена {fir_code} опустилась до уровня\n'
+                        f'{current_price} - {sec_code}'
+                    )
+                    break
+                time.sleep(time_to_request)
+        except Exception:
+            _get_exception_error(context, chat_id)
+            raise GetPriceError('Не получилось запросить информацию о цене.')
 
 
 def messages(update, context):
     """Обработчик сообщений."""
     chat = update.message
     chat_id = chat['chat']['id']
-
     mesg_of_user = chat['text'].split('-')
 
     if 'warn' in mesg_of_user:
         get_alarm(context, mesg_of_user, chat_id)
-
     else:
         get_price_with_message(context, mesg_of_user, chat_id)
 

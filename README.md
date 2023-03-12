@@ -1,4 +1,5 @@
 # Crynfo
+![Telegram](https://img.shields.io/badge/Telegram-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)
 ## telegram bot, который поделится информацией о криптовалютах 🤖
 
 ## Available features
@@ -10,5 +11,4 @@
 
 ## Try it - [crynfo](https://t.me/CrynfoBot)
 
-## Author - Alekseev Maksim
-- telegram - [tm](https://t.me/maxalxeev)
+## Author - [Alekseev Maksim](https://t.me/maxalxeev)
